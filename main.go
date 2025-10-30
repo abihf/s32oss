@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -11,6 +14,9 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsv4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 )
 
 const (
@@ -57,12 +63,23 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	if useInternal {
 		internalSuffix = "-internal"
 	}
+	query := ""
+	if r.URL.RawQuery != "" {
+		query = "?" + r.URL.RawQuery
+	}
 	targetHost := fmt.Sprintf("%s.%s%s.aliyuncs.com", bucket, region, internalSuffix)
-	targetURL := fmt.Sprintf("%s://%s/%s", scheme, targetHost, objectName)
+	targetURL := fmt.Sprintf("%s://%s/%s%s", scheme, targetHost, objectName, query)
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	r.Body.Close()
 
 	log.Printf("Proxying %s %s", r.Method, targetURL)
 
-	req, err := http.NewRequest(r.Method, targetURL, r.Body)
+	req, err := http.NewRequest(r.Method, targetURL, bytes.NewReader(body))
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -78,13 +95,7 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	contentType := req.Header.Get("Content-Type")
-	contentMD5 := req.Header.Get("Content-MD5")
-	if contentType == "" {
-		contentType = "application/octet-stream"
-	}
-
-	signOSSRequest(req, bucket, objectName, contentType, contentMD5)
+	signSigV4Request(req, body, region, accessKey, secretKey)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -100,6 +111,27 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
+}
+
+func signSigV4Request(req *http.Request, body []byte, region, accessKey, secretKey string) error {
+	creds := aws.Credentials{
+		AccessKeyID:     accessKey,
+		SecretAccessKey: secretKey,
+		Source:          "manual",
+	}
+
+	signer := awsv4.NewSigner()
+	payloadHash := fmt.Sprintf("%x", sha256.Sum256(body))
+
+	return signer.SignHTTP(
+		context.TODO(),
+		creds,
+		req,
+		payloadHash,
+		"s3",
+		region,
+		time.Now(),
+	)
 }
 
 func signOSSRequest(req *http.Request, bucket, objectName, contentType, contentMD5 string) {
