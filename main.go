@@ -2,11 +2,7 @@ package main
 
 import (
 	"bytes"
-	"context"
-	"crypto/hmac"
-	"crypto/sha1"
 	"crypto/sha256"
-	"encoding/base64"
 	"fmt"
 	"io"
 	"log"
@@ -79,7 +75,7 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("Proxying %s %s", r.Method, targetURL)
 
-	req, err := http.NewRequest(r.Method, targetURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, bytes.NewReader(body))
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -124,7 +120,7 @@ func signSigV4Request(req *http.Request, body []byte, region, accessKey, secretK
 	payloadHash := fmt.Sprintf("%x", sha256.Sum256(body))
 
 	return signer.SignHTTP(
-		context.TODO(),
+		req.Context(),
 		creds,
 		req,
 		payloadHash,
@@ -132,33 +128,4 @@ func signSigV4Request(req *http.Request, body []byte, region, accessKey, secretK
 		region,
 		time.Now(),
 	)
-}
-
-func signOSSRequest(req *http.Request, bucket, objectName, contentType, contentMD5 string) {
-	date := time.Now().UTC().Format(http.TimeFormat)
-
-	canonicalizedOSSHeaders := ""
-	canonicalizedResource := fmt.Sprintf("/%s/%s", bucket, objectName)
-
-	stringToSign := fmt.Sprintf("%s\n%s\n%s\n%s\n%s%s",
-		req.Method,
-		contentMD5,
-		contentType,
-		date,
-		canonicalizedOSSHeaders,
-		canonicalizedResource,
-	)
-
-	mac := hmac.New(sha1.New, []byte(secretKey))
-	mac.Write([]byte(stringToSign))
-	signature := base64.StdEncoding.EncodeToString(mac.Sum(nil))
-
-	authHeader := fmt.Sprintf("OSS %s:%s", accessKey, signature)
-
-	req.Header.Set("Authorization", authHeader)
-	req.Header.Set("Date", date)
-	req.Header.Set("Content-Type", contentType)
-	if contentMD5 != "" {
-		req.Header.Set("Content-MD5", contentMD5)
-	}
 }
