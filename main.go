@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"crypto/hmac"
 	"crypto/sha1"
 	"encoding/base64"
@@ -61,10 +60,9 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	targetHost := fmt.Sprintf("%s.%s%s.aliyuncs.com", bucket, region, internalSuffix)
 	targetURL := fmt.Sprintf("%s://%s/%s", scheme, targetHost, objectName)
 
-	body, _ := io.ReadAll(r.Body)
-	r.Body.Close()
+	log.Printf("Proxying %s %s", r.Method, targetURL)
 
-	req, err := http.NewRequest(r.Method, targetURL, bytes.NewReader(body))
+	req, err := http.NewRequest(r.Method, targetURL, r.Body)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
