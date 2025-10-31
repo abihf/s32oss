@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -25,6 +26,13 @@ var (
 	secretKey = os.Getenv("OSS_SECRET_KEY")
 
 	useInternal = os.Getenv("OSS_USE_INTERNAL") == "true"
+
+	buffPool = sync.Pool{
+		New: func() any {
+			buf := bytes.Buffer{}
+			return &buf
+		},
+	}
 )
 
 func main() {
@@ -66,16 +74,24 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	targetHost := fmt.Sprintf("%s.%s%s.aliyuncs.com", bucket, region, internalSuffix)
 	targetURL := fmt.Sprintf("%s://%s/%s%s", scheme, targetHost, objectName, query)
 
-	body, err := io.ReadAll(r.Body)
+	buf := buffPool.Get().(*bytes.Buffer)
+	defer buffPool.Put(buf)
+	buf.Reset()
+	if r.ContentLength > 0 {
+		buf.Grow(int(r.ContentLength))
+	}
+
+	_, err := io.Copy(buf, r.Body)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
+	body := buf.Bytes()
 	r.Body.Close()
 
 	log.Printf("Proxying %s %s", r.Method, targetURL)
 
-	req, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, buf)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
