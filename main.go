@@ -116,6 +116,10 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
+	if req.Method == http.MethodHead && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		quirkHeadHeader(&resp.Header)
+	}
+
 	for k, vv := range resp.Header {
 		for _, v := range vv {
 			w.Header().Add(k, v)
@@ -123,6 +127,24 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
+}
+
+func quirkHeadHeader(headers *http.Header) {
+	lm := headers.Get("Last-Modified")
+	if lm == "" {
+		// If OSS omitted it, inject the current time to prevent nil pointer panic
+		headers.Set("Last-Modified", time.Now().UTC().Format(http.TimeFormat))
+	} else {
+		// If it exists, ensure it is strictly formatted to standard HTTP time
+		// Try parsing it; if OSS returned a different format, rewrite it.
+		if t, err := time.Parse(time.RFC3339, lm); err == nil {
+			headers.Set("Last-Modified", t.UTC().Format(http.TimeFormat))
+		}
+	}
+
+	if headers.Get("Content-Length") == "" {
+		headers.Set("Content-Length", "0")
+	}
 }
 
 func signSigV4Request(req *http.Request, body []byte, region, accessKey, secretKey string) error {
