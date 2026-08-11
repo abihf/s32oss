@@ -33,6 +33,17 @@ var (
 			return &buf
 		},
 	}
+
+	ignoredReqHeaders = []string{
+		"Authorization",
+		"Date",
+		"X-Amz-Checksum-Algorithm",
+		"X-Amz-Sdk-Checksum-Algorithm",
+		"X-Amz-Checksum-Crc32",
+		"X-Amz-Checksum-Crc32c",
+		"X-Amz-Checksum-Sha1",
+		"X-Amz-Checksum-Sha256",
+	}
 )
 
 func main() {
@@ -99,7 +110,14 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 
 	// Copy relevant headers
 	for k, v := range r.Header {
-		if strings.EqualFold(k, "Authorization") || strings.EqualFold(k, "Date") {
+		ignored := false
+		for _, name := range ignoredReqHeaders {
+			if strings.EqualFold(k, name) {
+				ignored = true
+				break
+			}
+		}
+		if ignored {
 			continue
 		}
 		for _, vv := range v {
