@@ -161,21 +161,21 @@ func signSigV4Request(req *http.Request, region, accessKey, secretKey string) er
 
 	signer := awsv4.NewSigner()
 
-	// Use UNSIGNED-PAYLOAD to bypass the need to buffer the file into RAM for hashing
-	payloadHash := "UNSIGNED-PAYLOAD"
+	// 1. Steal the payload hash already calculated by GitLab's AWS SDK!
+	// This gives OSS the exact hash it wants without us needing to buffer the file into RAM.
+	payloadHash := req.Header.Get("X-Amz-Content-Sha256")
 
-	// If GitLab is doing a large chunked upload, we must use the streaming AWS constant
-	if req.Header.Get("Content-Encoding") == "aws-chunked" {
-		payloadHash = "STREAMING-AWS4-HMAC-SHA256-PAYLOAD"
+	// 2. Fallback just in case it's missing (keeps chunked uploads working)
+	if payloadHash == "" {
+		payloadHash = "UNSIGNED-PAYLOAD"
+		req.Header.Set("X-Amz-Content-Sha256", payloadHash)
 	}
-
-	req.Header.Set("X-Amz-Content-Sha256", payloadHash)
 
 	return signer.SignHTTP(
 		req.Context(),
 		creds,
 		req,
-		payloadHash,
+		payloadHash, // Pass the exact hash (or STREAMING constant) to the signer
 		"s3",
 		region,
 		time.Now(),
