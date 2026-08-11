@@ -125,6 +125,10 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if req.Header.Get("Content-Encoding") == "aws-chunked" {
+		req.Header.Set("X-Amz-Content-Sha256", "STREAMING-AWS4-HMAC-SHA256-PAYLOAD")
+	}
+
 	signSigV4Request(req, body, region, accessKey, secretKey)
 
 	resp, err := http.DefaultClient.Do(req)
