@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -37,27 +38,41 @@ var (
 	}
 )
 
+type HttpError struct {
+	error
+	status int
+}
+
 func main() {
 	if accessKey == "" || secretKey == "" {
 		log.Fatal("Set OSS_ACCESS_KEY and OSS_SECRET_KEY environment variables first")
 	}
 
-	http.HandleFunc("/", handleProxy)
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		err := handleProxy(w, r)
+		if err != nil {
+			var httpErr *HttpError
+			if ok := errors.As(err, &httpErr); ok {
+				http.Error(w, httpErr.error.Error(), httpErr.status)
+				return
+			}
+			http.Error(w, err.Error(), 500)
+		}
+	})
 	log.Printf("OSS proxy (HMAC SigV4) listening on :9000 for region %s", region)
 	log.Fatal(http.ListenAndServe(":9000", nil))
 }
 
-func handleProxy(w http.ResponseWriter, r *http.Request) {
+func handleProxy(w http.ResponseWriter, r *http.Request) error {
 	if r.URL.Path == "/health" {
 		w.Write([]byte("ok"))
-		return
+		return nil
 	}
 
 	// /bucket/object
 	parts := strings.SplitN(strings.TrimPrefix(r.URL.Path, "/"), "/", 2)
 	if len(parts) < 1 || parts[0] == "" {
-		http.Error(w, "missing bucket", http.StatusBadRequest)
-		return
+		return HttpError{error: errors.New("missing bucket"), status: http.StatusBadRequest}
 	}
 	bucket := parts[0]
 	objectName := ""
@@ -77,13 +92,10 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	targetHost := fmt.Sprintf("%s.%s%s.aliyuncs.com", bucket, region, internalSuffix)
 	targetURL := fmt.Sprintf("%s://%s/%s%s", scheme, targetHost, objectName, query)
 
-	log.Printf("Proxying %s %s", r.Method, targetURL)
-
 	// Stream r.Body directly to OSS without buffering into memory
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, r.Body)
 	if err != nil {
-		http.Error(w, err.Error(), 500)
-		return
+		return fmt.Errorf("failed to create request: %w", err)
 	}
 
 	// Crucial for direct streaming: Explicitly set the content length
@@ -108,17 +120,19 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 
 	// Sign the request
 	if err := signSigV4Request(req, region, accessKey, secretKey); err != nil {
-		http.Error(w, err.Error(), 500)
-		return
+		return fmt.Errorf("failed to sign request: %w", err)
 	}
 
 	// Forward the request to AliCloud OSS
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		http.Error(w, err.Error(), 502)
-		return
+		return HttpError{error: err, status: 502}
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		log.Printf("Request error %s %s %d", req.Method, req.URL.String(), resp.StatusCode)
+	}
 
 	// Apply HEAD request fixes for GitLab 19 AWS SDK v2 compatibility
 	if req.Method == http.MethodHead && resp.StatusCode >= 200 && resp.StatusCode < 300 {
@@ -133,6 +147,7 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
+	return nil
 }
 
 func quirkHeadHeader(headers *http.Header) {
