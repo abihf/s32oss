@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bytes"
+	"crypto/md5"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -92,8 +96,25 @@ func handleProxy(w http.ResponseWriter, r *http.Request) error {
 	targetHost := fmt.Sprintf("%s.%s%s.aliyuncs.com", bucket, region, internalSuffix)
 	targetURL := fmt.Sprintf("%s://%s/%s%s", scheme, targetHost, objectName, query)
 
+	var body io.Reader = r.Body
+
+	// QUIRK: DeleteMultipleObjects needs Content-MD5
+	if r.Method == http.MethodPost && strings.Contains(r.URL.RawQuery, "delete") {
+		// Read the body into memory to calculate MD5
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			return fmt.Errorf("failed to read request body: %w", err)
+		}
+		r.Body.Close()
+		md5Hash := md5.Sum(data)
+		md5Base64 := base64.StdEncoding.EncodeToString(md5Hash[:])
+		r.Header.Set("Content-MD5", md5Base64)
+
+		body = bytes.NewReader(data)
+	}
+
 	// Stream r.Body directly to OSS without buffering into memory
-	req, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, r.Body)
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, body)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
@@ -130,9 +151,14 @@ func handleProxy(w http.ResponseWriter, r *http.Request) error {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode >= 400 && resp.StatusCode != 404 {
 		body, _ := io.ReadAll(resp.Body)
-		log.Printf("Request error %s %s %d: %s", req.Method, req.URL.String(), resp.StatusCode, string(body))
+		slog.Warn("Request error",
+			"method", req.Method,
+			"url", req.URL.String(),
+			"status", resp.StatusCode,
+			"body", string(body),
+		)
 		w.WriteHeader(resp.StatusCode)
 		w.Write(body)
 		return nil
