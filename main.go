@@ -131,7 +131,11 @@ func handleProxy(w http.ResponseWriter, r *http.Request) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		log.Printf("Request error %s %s %d", req.Method, req.URL.String(), resp.StatusCode)
+		body, _ := io.ReadAll(resp.Body)
+		log.Printf("Request error %s %s %d: %s", req.Method, req.URL.String(), resp.StatusCode, string(body))
+		w.WriteHeader(resp.StatusCode)
+		w.Write(body)
+		return nil
 	}
 
 	// Apply HEAD request fixes for GitLab 19 AWS SDK v2 compatibility
